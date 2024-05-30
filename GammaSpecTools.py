@@ -18,10 +18,10 @@ from scipy.ndimage import gaussian_filter1d
 '''
 Modular dependencies:
 '''
-from utils import createHDivider
-from DataStore_upload import MetadataDialog
-from Photopeak_tools import PhotopeakTools, InteractivePeakTuningDialog
-from Quick_calibrate import quick_calibrate
+from Utils import createHDivider, drag_enter_event, drop_event, browse_path
+from DataStoreUpload import MetadataDialog
+from PhotopeakTools import PhotopeakTools, InteractivePeakTuningDialog
+from QuickCalibrate import quick_calibrate
 
 
 
@@ -45,13 +45,20 @@ class GammaToolsWindow(QMainWindow):
         '''
         Initialize file_path_label for drag & drop and browse
         '''
+        
         self.file_path_label = QLabel("Drop a folder here")
         self.file_path_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.file_path_label.setStyleSheet("background-color: white;")
 
         self.browse_button = QPushButton("Browse")
-        self.browse_button.clicked.connect(self.browse_directory)
+        self.browse_button.clicked.connect(lambda: browse_path(self.file_path_label, self.update_file_list, self.save_last_used_folder, folder=True))
         
+        self.setAcceptDrops(True)
+        self.dragEnterEvent = drag_enter_event
+        self.dropEvent = lambda event: drop_event(event, self.file_path_label, self.update_file_list, self.save_last_used_folder, folder=True)
+        
+        self.dropped_folder_path=""
+        self.update_file_list()
         '''
         Plotting initialization
         '''
@@ -172,7 +179,7 @@ class GammaToolsWindow(QMainWindow):
         '''
         settings_layout.addWidget(QLabel("Calibration:"))
         self.quick_calibrate_button = QPushButton("Quick Calibrate")
-        self.quick_calibrate_button.clicked.connect(self.quick_calibrate_spectrum)
+        self.quick_calibrate_button.clicked.connect(self.quick_calibrate_channel)
         settings_layout.addWidget(self.quick_calibrate_button)
 
         '''
@@ -302,22 +309,6 @@ class GammaToolsWindow(QMainWindow):
     '''
     Drag and drop functionality
     '''
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.accept()
-        else:
-            event.ignore()
-
-    def dropEvent(self, event):
-        files = [url.toLocalFile() for url in event.mimeData().urls()]
-        if len(files) == 1 and os.path.isdir(files[0]):
-            self.file_path_label.setText(files[0])
-            self.dropped_folder_path = files[0]
-            self.update_file_list()
-            self.save_last_used_folder(files[0])
-        else:
-            self.file_path_label.setText("Drop a folder here")
-    
     @staticmethod
     def extract_number_from_filename(filename):
         match = re.search(r'\d+', filename)
@@ -328,7 +319,7 @@ class GammaToolsWindow(QMainWindow):
         if os.path.isdir(folder_path):
             csv_files = [file for file in os.listdir(folder_path) if file.endswith('.csv')]
             if csv_files:
-                csv_files.sort(key=lambda x: self.extract_number_from_filename(x) if re.search(r'\d+', x) else x)
+                csv_files.sort(key=lambda x: self.extract_number_from_filename(x))
                 self.file_list_widget.clear()
                 self.file_list_widget.addItems(csv_files)
 
@@ -713,7 +704,7 @@ class GammaToolsWindow(QMainWindow):
             print("Metadata Saved:", metadata)
 
 
-    def quick_calibrate_spectrum(self):
+    def quick_calibrate_channel(self):
         if not self.selected_file:
             QMessageBox.warning(self, "Error", "No file selected. Please select a file first.")
             return
@@ -724,35 +715,35 @@ class GammaToolsWindow(QMainWindow):
         detected_peaks = self.get_detected_peaks()
         known_energies = self.get_known_energies()
 
-        if len(detected_peaks) != len(known_energies) or len(detected_peaks) == 0:
-            error_message = f"Detected peaks count ({len(detected_peaks)}) does not match known energies count ({len(known_energies)})"
-            QMessageBox.critical(self, "Error", error_message)
-            print(f"Error in quick calibration: {error_message}")
+        if len(detected_peaks) == 0:
+            QMessageBox.warning(self, "Error", "No detected peaks found.")
             return
 
-
-        detected_peak = detected_peaks[0]
-        known_energy = known_energies[0]
+        if len(detected_peaks) != len(known_energies):
+            QMessageBox.warning(self, "Error", f"Detected peaks count ({len(detected_peaks)}) does not match known energies count ({len(known_energies)})")
+            return
 
         try:
-            calibrated_df = quick_calibrate(df, detected_peak, known_energy)
-            calibrated_filename = os.path.splitext(self.selected_file)[0] + "_calibrated.csv"
-            calibrated_file_path = os.path.join(self.file_path_label.text(), calibrated_filename)
+            for detected_peak, known_energy in zip(detected_peaks, known_energies):
+                # Use quick_calibrate function to adjust the index for each channel
+                calibrated_df = quick_calibrate(df, detected_peak, known_energy)
 
+                # Save the calibrated DataFrame to a new CSV file
+                calibrated_filename = os.path.splitext(self.selected_file)[0] + f"_calibrated_{known_energy:.2f}keV.csv"
+                calibrated_file_path = os.path.join(self.file_path_label.text(), calibrated_filename)
+                calibrated_df.to_csv(calibrated_file_path, index=True)  # Index=True to save the index
 
-            calibrated_df.to_csv(calibrated_file_path, index=False)
-
-            QMessageBox.information(self, "Calibration Complete", f"Calibrated spectrum saved to {calibrated_file_path}.")
-            self.update_file_list()
+                QMessageBox.information(self, "Calibration Complete", f"Calibrated spectrum saved to {calibrated_file_path}.")
+                self.update_file_list()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"An error occurred during calibration: {str(e)}")
             print(f"Error in quick calibration: {str(e)}")
 
-
     def get_detected_peaks(self):
         detected_peaks = []
-        if self.detected_peak_list.count() > 0:
-            item_text = self.detected_peak_list.item(0).text()
+        # Retrieve detected peaks from the list widget
+        for i in range(self.detected_peak_list.count()):
+            item_text = self.detected_peak_list.item(i).text()
             try:
                 peak_value = float(item_text.split(':')[1].strip().split(' ')[2])
                 detected_peaks.append(peak_value)
