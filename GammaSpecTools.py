@@ -20,7 +20,7 @@ Modular dependencies:
 '''
 from Utils import createHDivider, drag_enter_event, drop_event, browse_path
 from DataStoreUpload import MetadataDialog
-from PhotopeakTools import PhotopeakDetector, PeakTuningDialog
+from PhotopeakTools import PhotopeakDetector, MultiISODetector, PeakTuningDialog
 from QuickCalibrate import quick_calibrate
 
 
@@ -134,6 +134,7 @@ class GammaToolsWindow(QMainWindow):
         self.isotope_combo.addItem("137Cs")
         self.isotope_combo.addItem("60Co")
         self.isotope_combo.addItem("241Am | 137Cs")
+        self.isotope_combo.addItem("241Am | 137Cs | 60Co")
         path_entry_layout.addWidget(self.isotope_combo)
 
         plots_and_lists_layout.addLayout(path_entry_layout)
@@ -151,8 +152,6 @@ class GammaToolsWindow(QMainWindow):
         Photopeak settings for fine-tuning peak positions
         '''
         settings_layout.addWidget(QLabel("Photopeak settings:"))
-        self.store_multiple_peaks_checkbox = QCheckBox("Multi-Iso")
-        settings_layout.addWidget(self.store_multiple_peaks_checkbox)
         self.detect_peaks_button = QPushButton("Detect Photopeaks")
         self.detect_peaks_button.clicked.connect(self.detect_peaks)
         settings_layout.addWidget(self.detect_peaks_button)
@@ -370,7 +369,10 @@ class GammaToolsWindow(QMainWindow):
         
         if channel_text != self.selected_channel:
             self.selected_channel = channel_text
-            self.plot_single_channel()
+            if self.isotope_combo.currentText() == "241Am | 137Cs" or self.isotope_combo.currentText() == "241Am | 137Cs | 60Co":
+                self.plot_multi_peaks()
+            else:
+                self.plot_single_channel()
 
         for i in range(self.detected_peak_list.count()):
             peak_info = self.detected_peak_list.item(i).text()
@@ -420,7 +422,11 @@ class GammaToolsWindow(QMainWindow):
     Automatic Photopeak detection for all channels
     '''
     def detect_peaks(self):
-        PhotopeakDetector.run_detection(self)
+        if self.isotope_combo.currentText() == "241Am | 137Cs":
+            isotopes = ["241Am", "137Cs"]
+            MultiISODetector.run_multi_detection(self, isotopes)
+        else:
+            PhotopeakDetector.run_detection(self)
     ''' 
     Plotting/visualization methods
     '''
@@ -585,7 +591,7 @@ class GammaToolsWindow(QMainWindow):
             ax.plot(x_values, y_values, label=channel_name)
 
         for channel_name, peak_energy in detected_peaks:
-            ax.axvline(x=peak_energy, color='r', linestyle='--', linewidth = 0.5, label=f'{channel_name} Peak at {peak_energy:.2f} keV')
+            ax.axvline(x=peak_energy, color='r', linestyle='--', linewidth = 0.5)
 
         ax.set_title('All Channels with Detected Peaks')
         ax.set_xlabel('Energy (keV)' if self.calibrated_radio.isChecked() else 'ADC')
@@ -649,7 +655,66 @@ class GammaToolsWindow(QMainWindow):
 
         self.canvas.draw()
         self.last_plot_all_channels = False
-            
+    
+    
+    def plot_multi_peaks(self):
+            file_path = os.path.join(self.file_path_label.text(), self.selected_file)
+            df = pd.read_csv(file_path)
+            self.figure.clear()
+            ax = self.figure.add_subplot(111)
+
+            if self.selected_channel == "Single_Channel":
+                x_values = df.iloc[:, 0]
+                y_values = df.iloc[:, 1]
+            else:
+                try:
+                    channel_index = int(self.selected_channel.split('_')[1])
+                    channel_data = df.iloc[channel_index]
+                    x_values = pd.to_numeric(df.columns, errors='coerce')
+                    y_values = channel_data.values
+                except ValueError as e:
+                    QMessageBox.critical(self, "Error", f"Failed to parse channel index from {self.selected_channel}: {e}")
+                    return
+
+            ax.plot(x_values, y_values, label='Channel Data')
+
+            reference_energies = {
+                "241Am": [59.54],
+                "137Cs": [661.66],
+                "60Co": [1173.23, 1332.5]
+            }
+
+            detected_peaks = []
+
+            # Gather all detected peaks for the selected channel
+            for i in range(self.detected_peak_list.count()):
+                item_text = self.detected_peak_list.item(i).text()
+                if item_text.startswith(self.selected_channel + ":"):
+                    peak_energy = float(item_text.split(':')[1].strip().split(' ')[2])
+                    detected_peaks.append(peak_energy)
+                    print(detected_peaks)
+
+            # Plot detected peaks
+            for peak_energy in detected_peaks:
+                smoothed_y = gaussian_filter1d(y_values, sigma=15)
+                ax.plot(x_values, smoothed_y, label='Smoothed Data', linewidth=0.5, color='r', alpha=0.5)
+                ax.axvline(x=peak_energy, color='r', linestyle='--', linewidth=0.5, label=f'Peak at {peak_energy:.2f} keV')
+
+            # Plot reference energies if calibrated radio is checked
+            if self.calibrated_radio.isChecked():
+                for isotope, energies in reference_energies.items():
+                    if isotope in self.isotope_combo.currentText():
+                        for energy in energies:
+                            ax.axvline(x=energy, linestyle='dotted', linewidth=0.7, color='k', label=f'{isotope} Ref energy @ {energy} keV')
+
+            ax.set_title(f'{self.selected_channel}')
+            ax.set_xlabel('Energy (keV)' if self.calibrated_radio.isChecked() else 'ADC')
+            ax.set_ylabel('Counts')
+            ax.legend()
+            self.canvas.draw()
+            self.last_plot_all_channels = False            
+
+
 ###### DATA-PROCESSING METHODS ######
             
     def normalize_all_channels(self):

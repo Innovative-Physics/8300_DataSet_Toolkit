@@ -9,7 +9,6 @@ from scipy.signal import find_peaks
 from scipy.ndimage import gaussian_filter1d
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-
 from matplotlib.figure import Figure
 
 
@@ -50,12 +49,13 @@ class PhotopeakDetector:
 
             # Use a specific method based on isotope
             if isotope == "60Co":
-                found_peak, peak_energy = PhotopeakDetector.adjust_ROI(main_window, channel_name, x_values, y_values)
+                found_peak, peak_energy = PhotopeakDetector.adjust_ROI(main_window, isotope, channel_name, x_values, y_values)
                 if not found_peak:
                     found_peak, peak_energy, user_defined_range = PhotopeakDetector.prompt_for_new_range_until_peaks_found(
                         main_window, channel_name, x_values, y_values, user_defined_range)
             else:
-                found_peak, peak_energy = PhotopeakDetector.detect_peaks(main_window, channel_name, x_values, y_values)
+                mask = PhotopeakDetector.get_initial_mask(main_window, isotope, x_values)
+                found_peak, peak_energy = PhotopeakDetector.detect_peaks(main_window, channel_name, x_values, y_values, mask)
                 if not found_peak:
                     found_peak, peak_energy, user_defined_range = PhotopeakDetector.prompt_for_new_range_until_peaks_found(
                         main_window, channel_name, x_values, y_values, user_defined_range)
@@ -71,13 +71,13 @@ class PhotopeakDetector:
             main_window.plot_single_channel()
 
     @staticmethod
-    def adjust_ROI(main_window, channel_name, x_values, y_values):
+    def adjust_ROI(main_window, isotope, channel_name, x_values, y_values):
         """
         Adjusts search range based on initial peak detection and detects peaks within the expanded range.
         The range is limited to 25% outside the original mask range.
         """
         # Get initial mask and range
-        mask = PhotopeakDetector.get_initial_mask(main_window, main_window.isotope_combo.currentText(), x_values)
+        mask = PhotopeakDetector.get_initial_mask(main_window, isotope, x_values)
         initial_x_values = x_values[mask]
         initial_y_values = y_values[mask]
 
@@ -98,7 +98,7 @@ class PhotopeakDetector:
         restricted_y_values = y_values[mask]
 
         # Detect peaks in the new filtered range
-        found_peak, peak_energy = PhotopeakDetector.detect_peaks(main_window, channel_name, restricted_x_values, restricted_y_values)
+        found_peak, peak_energy = PhotopeakDetector.detect_peaks(main_window, channel_name, restricted_x_values, restricted_y_values, mask)
         if found_peak:
             peak_info = f"{channel_name}: Peak at {peak_energy:.2f} keV"
             main_window.detected_peak_list.addItem(peak_info)
@@ -114,16 +114,16 @@ class PhotopeakDetector:
         1. Check isotope and calibration status.
         2. Return a boolean array where True values correspond to x_values within the desired range.
         """
-        if isotope == "137Cs":
-            return (x_values >= 400) & (x_values <= 1000) if main_window.calibrated_radio.isChecked() else (x_values >= 600) & (x_values <= 1700)
-        elif isotope == "241Am":
-            return (x_values >= 20) & (x_values <= 70) if main_window.calibrated_radio.isChecked() else (x_values >= 70) & (x_values <= 200)
+        if isotope == "241Am":
+            return (x_values >= 20) & (x_values <= 70) if main_window.calibrated_radio.isChecked() else (x_values >= 70) & (x_values <= 800)
+        elif isotope == "137Cs":
+            return (x_values >= 400) & (x_values <= 1000) if main_window.calibrated_radio.isChecked() else (x_values >= 1000) & (x_values <= 2500)
         elif isotope == "60Co":
             return (x_values >= 1100) & (x_values <= 1700) if main_window.calibrated_radio.isChecked() else (x_values >= 5000) & (x_values <= 8000)
         return np.full(x_values.shape, False, dtype=bool)
 
     @staticmethod
-    def detect_peaks(main_window, channel_name, x_values, y_values):
+    def detect_peaks(main_window, channel_name, x_values, y_values, mask):
         """
         Detects peaks within given x and y values using Gaussian smoothing and peak finding.
 
@@ -133,8 +133,6 @@ class PhotopeakDetector:
         3. If peaks are found, return the highest peak and its energy.
         4. Add detected peak information to the GUI.
         """
-        # Use initial mask based on isotope
-        mask = PhotopeakDetector.get_initial_mask(main_window, main_window.isotope_combo.currentText(), x_values)
         restricted_x_values = x_values[mask]
         restricted_y_values = y_values[mask]
 
@@ -142,7 +140,7 @@ class PhotopeakDetector:
             return False, None
 
         smoothed_y_values = gaussian_filter1d(restricted_y_values, sigma=5)
-        peaks, properties = find_peaks(smoothed_y_values, prominence=5)  # Adjust parameters as necessary
+        peaks, properties = find_peaks(smoothed_y_values, prominence=1.5)  # Adjust parameters as necessary
 
         if peaks.size > 0:
             highest_peak_index = peaks[np.argmax(properties['prominences'])]
@@ -164,10 +162,7 @@ class PhotopeakDetector:
                     return False, None, None  # User cancelled the operation
 
             mask = (x_values >= new_range[0]) & (x_values <= new_range[1])
-            restricted_x_values = x_values[mask]
-            restricted_y_values = y_values[mask]
-
-            found_peak, peak_energy = PhotopeakDetector.detect_peaks(main_window, restricted_x_values, restricted_y_values)
+            found_peak, peak_energy = PhotopeakDetector.detect_peaks(main_window, channel_name, x_values, y_values, mask)
             if found_peak:
                 peak_info = f"{channel_name}: Peak at {peak_energy:.2f} keV"
                 main_window.detected_peak_list.addItem(peak_info)
@@ -177,7 +172,7 @@ class PhotopeakDetector:
 
     @staticmethod
     def prompt_for_new_range(main_window, x_values, y_values, channel_name):
-        QMessageBox.warning(main_window, "Error", "No characteristic peaks detected in the expected ROI. Please select a new ROI.")
+        QMessageBox.warning(main_window, "Error", f"No characteristic peaks {main_window.isotope_combo.currentText()} detected in the expected ROI. Please select a new ROI.")
         dialog = QDialog()
         dialog.setWindowTitle(f"Select new range for {channel_name}")
         layout = QVBoxLayout(dialog)
@@ -230,6 +225,69 @@ class PhotopeakDetector:
             return new_range
         else:
             return PhotopeakDetector.prompt_for_new_range(main_window, x_values, y_values, channel_name)
+
+
+class MultiISODetector(PhotopeakDetector):
+    """
+    Detects peaks across multiple isotopes for a selected file and updates the GUI.
+
+    Steps:
+    1. Validate that a file is selected.
+    2. Read the spectral data from the file.
+    3. Clear any previously detected peaks.
+    4. For each channel and isotope, detect peaks based on x-values and y-values using adjust_ROI.
+    5. Append detected peaks and update the GUI with peak information.
+    6. Display completion message and update the plot based on user selection.
+    """
+
+    @staticmethod
+    def run_multi_detection(main_window, isotopes):
+        if main_window.selected_file is None:
+            QMessageBox.warning(main_window, "Error", "No file selected. Please select a file first.")
+            return
+
+        file_path = os.path.join(main_window.file_path_label.text(), main_window.selected_file)
+        df = pd.read_csv(file_path)
+        main_window.detected_peak_list.clear()
+
+        detected_peaks = []
+
+        for isotope in isotopes:
+            user_defined_range = None
+            for index, row in df.iterrows():
+                channel_name = f'Channel_{index}'
+                x_values = pd.to_numeric(df.columns, errors='coerce')
+                y_values = row.values
+                if detected_peaks:
+                    last_detected_peak_energy = detected_peaks[-1][1]
+                    start_index = np.searchsorted(x_values, last_detected_peak_energy + 1000)
+                    mask = np.zeros_like(x_values, dtype=bool)
+                    mask[start_index:] = True
+                else:
+                    mask = MultiISODetector.get_initial_mask(main_window, isotope, x_values)
+                # Use a specific method based on isotope
+                if isotope == "60Co":
+                    found_peak, peak_energy = MultiISODetector.adjust_ROI(main_window, isotope, channel_name, x_values, y_values)
+                    if not found_peak:
+                        found_peak, peak_energy, user_defined_range = MultiISODetector.prompt_for_new_range_until_peaks_found(
+                            main_window, channel_name, x_values, y_values, user_defined_range)
+                else:
+
+                    found_peak, peak_energy = MultiISODetector.detect_peaks(main_window, channel_name, x_values, y_values, mask)
+                    if not found_peak:
+                        found_peak, peak_energy, user_defined_range = MultiISODetector.prompt_for_new_range_until_peaks_found(
+                            main_window, channel_name, x_values, y_values, user_defined_range)
+
+                if found_peak:
+                    detected_peaks.append((channel_name, peak_energy))
+
+        QMessageBox.information(main_window, "Peak Detection Complete", "All channels have been processed for peaks.")
+
+        if main_window.selected_channel is None or main_window.last_plot_all_channels:
+            main_window.plot_all_channels_with_peaks(df, detected_peaks)
+        else:
+            main_window.plot_multi_peaks()
+
 
 class PeakTuningDialog(QDialog):
     """
